@@ -1,123 +1,84 @@
-# Windows EPS Data Collection Tool
+# Get-WindowsEPS.ps1
 
-> **Get-WindowsEPS.ps1** — Scan Windows Event Logs to calculate Events Per Second (EPS) and projected data volume for SIEM sizing and capacity planning.
+PowerShell script to scan Windows Event Logs and calculate EPS (Events Per Second) rates with storage volume projections. Built for SIEM sizing, WinCollect profile selection, and capacity planning.
 
----
+Supports scanning localhost, a list of remote hosts, or all computers in an AD domain.
 
 ## Table of Contents
 
-- [Overview](#overview)
-- [Key Features](#key-features)
-- [Prerequisites](#prerequisites)
-- [Installation](#installation)
+- [What it does](#what-it-does)
+- [Requirements](#requirements)
+- [Setup](#setup)
 - [Usage](#usage)
-  - [Interactive Mode](#interactive-mode)
-  - [Local Host Scan](#local-host-scan)
-  - [IP List Scan](#ip-list-scan)
-  - [Domain Scan](#domain-scan)
-  - [Advanced Examples](#advanced-examples)
 - [Parameters](#parameters)
-- [Output Files](#output-files)
-  - [Detailed Report Columns](#detailed-report-columns)
-  - [Summary Report Columns](#summary-report-columns)
-  - [Sample Output](#sample-output)
-- [Data Volume Calculation](#data-volume-calculation)
-- [WinCollect Profile Mapping](#wincollect-profile-mapping)
+- [Output](#output)
+- [How data volume is calculated](#how-data-volume-is-calculated)
+- [WinCollect profiles](#wincollect-profiles)
 - [Troubleshooting](#troubleshooting)
 - [Changelog](#changelog)
-- [Security Considerations](#security-considerations)
-- [License](#license)
+- [Security notes](#security-notes)
 
----
+## What it does
 
-## Overview
+The script reads the Application, Security, and System event logs (plus ForwardedEvents and Sysmon if you enable them) and calculates:
 
-The Windows EPS Data Collection Tool scans Windows Event Logs (Application, Security, System, and optionally ForwardedEvents and Sysmon) to calculate:
+- Average EPS per log and combined total
+- Peak EPS estimate (3x the average, for sizing purposes)
+- Average event size per log
+- Projected data volume in GB/Day, GB/Week, GB/Month, GB/Year
+- A WinCollect agent profile recommendation based on total EPS
 
-- **Average EPS** — Events Per Second based on historical log data
-- **Peak EPS Estimate** — 3× average as a capacity planning buffer
-- **Data Volume Projections** — Estimated GB per Day, Week, Month, and Year
-- **WinCollect Profile Suggestion** — Recommended agent profile based on EPS thresholds
+Everything gets exported to CSV files you can hand off to whoever is doing the SIEM sizing.
 
-It supports three scan modes: local host, remote hosts via IP list, and Active Directory domain-wide discovery.
+## Requirements
 
----
+| What | Why |
+|---|---|
+| PowerShell 5.1+ | `$PSVersionTable.PSVersion` to check |
+| Run as admin | Needed to read the Security log |
+| Execution policy set to RemoteSigned | `Get-ExecutionPolicy` to check |
+| RSAT AD module | Only if you're doing a domain-wide scan |
+| WinRM enabled on targets | Only for remote scanning (TCP 5985/5986) |
+| Network access / ICMP | Ping + WinRM ports open to target hosts |
 
-## Key Features
+## Setup
 
-- **Three scan modes** — Local, IP list file, or full AD domain discovery
-- **Extended log sources** — Application, Security, System + optional ForwardedEvents and Sysmon
-- **Data volume projections** — GB/Day, GB/Week, GB/Month, GB/Year per log and total
-- **Average event size calculation** — Derived from log file size ÷ event count
-- **Peak EPS estimation** — 3× multiplier for SIEM capacity planning
-- **WinCollect profile mapping** — Automatic tier classification with threshold warnings
-- **Dual CSV output** — Detailed per-log report + high-level summary
-- **Persistent logging** — Timestamped log file for audit and troubleshooting
-- **Graceful failure handling** — Continues scanning remaining hosts on per-host errors
-- **CLI and interactive modes** — Full parameter support with interactive fallback
-- **WinRM + ICMP validation** — Connectivity checks before scanning remote hosts
-
----
-
-## Prerequisites
-
-| Requirement | Details | How to Check / Install |
-|---|---|---|
-| **PowerShell** | Version 5.1 or later | `$PSVersionTable.PSVersion` |
-| **Execution Policy** | `RemoteSigned` or `Bypass` | `Get-ExecutionPolicy` |
-| **Admin Privileges** | Run as Administrator | Required for Security log access |
-| **RSAT AD Module** | Domain scan mode only | `Get-Module -ListAvailable ActiveDirectory` |
-| **WinRM** | Remote scanning | `Test-WSMan -ComputerName <target>` |
-| **Network Access** | TCP 5985/5986 + ICMP | Firewall rules for WinRM and ping |
-
----
-
-## Installation
-
-**1. Download the script**
+Grab the script and drop it somewhere:
 
 ```powershell
-# Clone the repository
 git clone https://github.com/your-org/windows-eps-tool.git
 cd windows-eps-tool
-
-# Or download directly
-Invoke-WebRequest -Uri "https://raw.githubusercontent.com/your-org/windows-eps-tool/main/Get-WindowsEPS.ps1" -OutFile "Get-WindowsEPS.ps1"
 ```
 
-**2. Set execution policy**
+Or just download the `.ps1` directly.
+
+Set execution policy if you haven't:
 
 ```powershell
-# Permanent (recommended)
 Set-ExecutionPolicy RemoteSigned -Scope CurrentUser
-
-# Or single session only
-Set-ExecutionPolicy Bypass -Scope Process
 ```
 
-**3. Enable WinRM on remote targets** (if scanning remote hosts)
+If you're scanning remote boxes, make sure WinRM is enabled on them:
 
 ```powershell
-# On each target host (or deploy via GPO)
+# run on each target (or push via GPO)
 Enable-PSRemoting -Force
 
-# Trust specific hosts (on the scanning machine)
+# on your scanning machine, trust the targets
 Set-Item WSMan:\localhost\Client\TrustedHosts -Value "192.168.1.*" -Force
 ```
 
----
-
 ## Usage
 
-### Interactive Mode
+### Quick start
 
-Run the script without parameters to be guided through the process:
+Just run it with no parameters and it'll walk you through it:
 
 ```powershell
 .\Get-WindowsEPS.ps1
 ```
 
-You'll see a menu to select the scan mode, followed by prompts for any required inputs.
+You get a menu:
 
 ```
 ========================================
@@ -130,153 +91,129 @@ Select scan mode:
   [3] Domain      - Scan all domain computers
 ```
 
-### Local Host Scan
-
-Scans event logs on the machine where the script is executed. No credentials required.
+### Scan this machine
 
 ```powershell
 .\Get-WindowsEPS.ps1 -Mode LocalHost
 ```
 
-### IP List Scan
+No credentials needed. Just runs against local logs.
 
-Scans remote computers listed in a text file (one hostname or IP per line).
+### Scan a list of hosts
 
 ```powershell
 .\Get-WindowsEPS.ps1 -Mode IPList -InputFile "C:\hosts.txt"
 ```
 
-**Example `hosts.txt`:**
+The file is just one hostname or IP per line. Lines starting with `#` are comments.
 
 ```text
-# Domain Controllers
+# DCs
 dc01.corp.local
 dc02.corp.local
 
-# File Servers
+# file servers
 192.168.1.50
 192.168.1.51
-
-# Exchange
-exchange01.corp.local
 ```
 
-> Lines starting with `#` are treated as comments and ignored. Blank lines are skipped.
-
-### Domain Scan
-
-Automatically discovers all enabled Windows computers in Active Directory.
+### Scan the whole domain
 
 ```powershell
 .\Get-WindowsEPS.ps1 -Mode Domain
 ```
 
-### Advanced Examples
+Pulls all enabled Windows machines from AD and scans them. You'll need the RSAT AD PowerShell module installed.
+
+### More examples
 
 ```powershell
-# Local scan with ForwardedEvents and Sysmon logs
+# include ForwardedEvents and Sysmon
 .\Get-WindowsEPS.ps1 -Mode LocalHost -IncludeForwardedEvents -IncludeSysmon
 
-# IP list with custom output directory
+# custom output folder
 .\Get-WindowsEPS.ps1 -Mode IPList -InputFile "servers.txt" -OutputPath "D:\EPSReports"
 
-# Domain scan with pre-supplied credentials (useful for automation)
+# pass credentials upfront (good for scripted runs)
 $cred = Get-Credential
 .\Get-WindowsEPS.ps1 -Mode Domain -Credential $cred -OutputPath "C:\Reports"
 
-# Scan only Security and Sysmon logs
+# only scan Security + Sysmon
 .\Get-WindowsEPS.ps1 -Mode LocalHost -LogNames @('Security') -IncludeSysmon
-
-# Full scan with all options
-.\Get-WindowsEPS.ps1 -Mode IPList `
-    -InputFile "C:\all-servers.txt" `
-    -OutputPath "C:\EPSReports" `
-    -IncludeForwardedEvents `
-    -IncludeSysmon `
-    -TimeoutSeconds 60
 ```
-
----
 
 ## Parameters
 
-| Parameter | Type | Default | Description |
+| Parameter | Type | Default | What it does |
 |---|---|---|---|
-| `-Mode` | `String` | *(interactive)* | Scan mode: `LocalHost`, `IPList`, or `Domain` |
-| `-InputFile` | `String` | *(file dialog)* | Path to text file with hostnames/IPs (IPList mode) |
-| `-OutputPath` | `String` | Desktop | Directory for output CSV reports and log file |
-| `-LogNames` | `String[]` | `Application, Security, System` | Event log names to scan |
-| `-Credential` | `PSCredential` | *(prompt)* | Credentials for remote host access |
-| `-IncludeForwardedEvents` | `Switch` | `$false` | Also scan the ForwardedEvents log |
-| `-IncludeSysmon` | `Switch` | `$false` | Also scan Microsoft-Windows-Sysmon/Operational |
-| `-TimeoutSeconds` | `Int` | `30` | Connection timeout for remote hosts |
-| `-MaxConcurrentJobs` | `Int` | `5` | Maximum parallel scan jobs |
+| `-Mode` | String | interactive prompt | `LocalHost`, `IPList`, or `Domain` |
+| `-InputFile` | String | file picker dialog | Text file with one host per line (IPList mode) |
+| `-OutputPath` | String | Desktop | Where to save the reports |
+| `-LogNames` | String[] | Application, Security, System | Which event logs to scan |
+| `-Credential` | PSCredential | prompts you | Creds for remote access |
+| `-IncludeForwardedEvents` | Switch | off | Add ForwardedEvents to the scan |
+| `-IncludeSysmon` | Switch | off | Add Sysmon operational log to the scan |
+| `-TimeoutSeconds` | Int | 30 | How long to wait for remote connections |
+| `-MaxConcurrentJobs` | Int | 5 | Parallel scan limit |
 
----
+## Output
 
-## Output Files
+You get three files in your output directory:
 
-The script generates three files in the output directory:
-
-| File | Description |
+| File | What's in it |
 |---|---|
-| `EPS-Report-<timestamp>.csv` | Detailed per-log metrics for every computer |
-| `EPS-Summary-<timestamp>.csv` | High-level summary with totals and profiles |
-| `EPS-Collection-Log-<timestamp>.txt` | Timestamped execution log for troubleshooting |
+| `EPS-Report-<timestamp>.csv` | Full breakdown per log per machine |
+| `EPS-Summary-<timestamp>.csv` | One row per machine with totals |
+| `EPS-Collection-Log-<timestamp>.txt` | Execution log with timestamps and errors |
 
-### Detailed Report Columns
+### Detailed report columns
 
-For **each log** scanned (Application, Security, System, etc.), the report includes:
+Per log (Application, Security, System, etc.):
 
-| Column | Description |
+| Column | What it is |
 |---|---|
-| `<Log> EPS` | Average events per second |
-| `<Log> Peak Est.` | Estimated peak EPS (3× average) |
-| `<Log> Total Events` | Total event count in the log |
-| `<Log> Size (MB)` | Current log file size |
-| `<Log> Avg Event (KB)` | Average size per event (log size ÷ event count) |
-| `<Log> GB/Day` | Projected data volume per day |
-| `<Log> GB/Week` | Projected data volume per week |
-| `<Log> GB/Month` | Projected data volume per month (30 days) |
-| `<Log> GB/Year` | Projected data volume per year (365 days) |
-| `<Log> Oldest Event` | Timestamp of the earliest event |
-| `<Log> Newest Event` | Timestamp of the most recent event |
-| `<Log> Time Span (h)` | Hours between oldest and newest events |
-| `<Log> Status` | `OK`, `Empty`, or `Error` |
+| `<Log> EPS` | Average events/sec |
+| `<Log> Peak Est.` | 3x the average (planning buffer) |
+| `<Log> Total Events` | Event count |
+| `<Log> Size (MB)` | Log file size |
+| `<Log> Avg Event (KB)` | Log size / event count |
+| `<Log> GB/Day` | Projected daily volume |
+| `<Log> GB/Week` | Projected weekly volume |
+| `<Log> GB/Month` | Projected monthly volume (30d) |
+| `<Log> GB/Year` | Projected yearly volume (365d) |
+| `<Log> Oldest Event` | First event timestamp |
+| `<Log> Newest Event` | Last event timestamp |
+| `<Log> Time Span (h)` | Hours between first and last |
+| `<Log> Status` | OK, Empty, or Error |
 
-**Total columns** across all logs:
+Totals across all logs:
 
-| Column | Description |
+| Column | What it is |
 |---|---|
-| `Total EPS` | Combined EPS across all scanned logs |
-| `Peak Estimate EPS` | Combined peak estimate (3× total average) |
-| `Total GB/Day` | Combined projected volume per day |
-| `Total GB/Week` | Combined projected volume per week |
-| `Total GB/Month` | Combined projected volume per month |
-| `Total GB/Year` | Combined projected volume per year |
-| `Profile Suggestion` | Recommended WinCollect agent profile |
-| `Profile Range` | EPS range for the suggested profile |
-| `Profile Note` | Warnings (e.g., if EPS exceeds standard profiles) |
+| `Total EPS` | Sum of all log EPS |
+| `Peak Estimate EPS` | 3x total average |
+| `Total GB/Day` | Combined daily volume |
+| `Total GB/Week` | Combined weekly volume |
+| `Total GB/Month` | Combined monthly volume |
+| `Total GB/Year` | Combined yearly volume |
+| `Profile Suggestion` | WinCollect profile recommendation |
+| `Profile Range` | EPS band for that profile |
+| `Profile Note` | Warning if EPS is unusually high |
 
-### Summary Report Columns
+### Summary report columns
 
-| Column | Description |
+| Column | What it is |
 |---|---|
 | `Computer` | Hostname or IP |
-| `OS Version` | Windows OS version |
+| `OS Version` | Windows version |
 | `Total EPS` | Combined EPS |
-| `Peak Estimate EPS` | Combined peak estimate |
-| `Total GB/Day` | Total projected GB per day |
-| `Total GB/Week` | Total projected GB per week |
-| `Total GB/Month` | Total projected GB per month |
-| `Total GB/Year` | Total projected GB per year |
+| `Peak Estimate EPS` | 3x average |
+| `Total GB/Day` through `Total GB/Year` | Volume projections |
 | `Profile Suggestion` | Recommended profile |
-| `Profile Range` | EPS range |
-| `Profile Note` | Warnings |
+| `Profile Range` | EPS band |
+| `Profile Note` | Warnings if any |
 
-### Sample Output
-
-**Console summary after a scan:**
+### What the console output looks like
 
 ```
 ==================== EPS SCAN SUMMARY ====================
@@ -296,114 +233,108 @@ VM-WKS-01      Microsoft Windows 11 Enterprise      0.05242    0.0031  0.0217   
 =========================================================
 ```
 
----
+## How data volume is calculated
 
-## Data Volume Calculation
-
-The script estimates storage requirements using the following methodology:
+Pretty straightforward:
 
 ```
-Average Event Size (KB) = Log File Size (MB) × 1024 ÷ Total Event Count
+Avg Event Size (KB)  = Log Size (MB) * 1024 / Total Events
+Bytes/sec            = EPS * Avg Event Size (bytes)
 
-Bytes Per Second = Average EPS × Average Event Size (bytes)
-
-GB/Day   = Bytes Per Second × 86,400   ÷ 1,073,741,824
-GB/Week  = Bytes Per Second × 604,800  ÷ 1,073,741,824
-GB/Month = Bytes Per Second × 2,592,000 ÷ 1,073,741,824   (30 days)
-GB/Year  = Bytes Per Second × 31,536,000 ÷ 1,073,741,824  (365 days)
+GB/Day   = Bytes/sec * 86400    / 1073741824
+GB/Week  = Bytes/sec * 604800   / 1073741824
+GB/Month = Bytes/sec * 2592000  / 1073741824    (assumes 30 days)
+GB/Year  = Bytes/sec * 31536000 / 1073741824    (assumes 365 days)
 ```
 
-**Important notes:**
+Keep in mind:
 
-- These are **estimates** based on current average event sizes and rates
-- Actual volumes will vary with audit policy changes, user activity, and security events
-- The **Peak Estimate (3×)** should be used for infrastructure sizing to account for spikes during logon storms, incidents, or batch processing
-- ForwardedEvents logs can significantly increase total volume if event forwarding is configured
-- Sysmon logs tend to have higher EPS and larger event sizes than standard Windows logs
+- These are estimates based on what's currently in the logs. If you change audit policies or enable new Sysmon rules, the numbers will shift.
+- Use the Peak Estimate (3x) column when doing actual infrastructure sizing. Logon storms, security incidents, and batch jobs can spike well above average.
+- ForwardedEvents can dominate the total if you have event forwarding configured across many sources.
+- Sysmon tends to generate more events with bigger payloads than the standard Windows logs, especially with verbose configs.
 
----
+## WinCollect profiles
 
-## WinCollect Profile Mapping
-
-| Profile | EPS Range | Typical Use Case | Tier |
+| Profile | EPS Range | Typical hosts | Tier |
 |---|---|---|---|
-| **Default Endpoint** | 0–50 | Workstations, low-activity servers | 1 |
-| **Typical Server** | 51–250 | File servers, print servers, standard infrastructure | 2 |
-| **High Event Rate Server** | 251–625 | Domain controllers, Exchange, SQL, web servers | 3 |
-| **High Event Rate (Warning)** | 625+ | Exceeds standard profiles — consider a dedicated collector | 4 |
+| Default Endpoint | 0-50 | Workstations, low-traffic servers | 1 |
+| Typical Server | 51-250 | File/print servers, general infra | 2 |
+| High Event Rate Server | 251-625 | DCs, Exchange, SQL, busy web servers | 3 |
+| High Event Rate (Warning) | 625+ | Over standard range, look at a dedicated collector | 4 |
 
-> **Tip:** If multiple hosts fall into Tier 4, consider deploying a dedicated WinCollect standalone gateway to handle the event volume.
-
----
+If you've got multiple machines hitting Tier 4, you probably want a dedicated WinCollect standalone gateway rather than trying to run agents locally on each box.
 
 ## Troubleshooting
 
-### Common Issues
-
-| Issue | Cause | Resolution |
+| Problem | Likely cause | Fix |
 |---|---|---|
-| **Access Denied** | Insufficient privileges | Run PowerShell as Administrator; use domain admin credentials for remote scans |
-| **Host Unreachable** | Network / firewall | Verify ICMP ping and TCP 5985/5986; check DNS resolution |
-| **WinRM Not Available** | Service not configured | Run `Enable-PSRemoting -Force` on target; check TrustedHosts |
-| **0 Events in Log** | Log empty or recently cleared | Marked as `Empty` status — informational, not an error |
-| **ActiveDirectory Module Missing** | RSAT not installed | Server: `Add-WindowsFeature RSAT-AD-PowerShell` / Win10+: Settings → Apps → Optional Features |
-| **Execution Policy Error** | Script blocked | `Set-ExecutionPolicy RemoteSigned -Scope CurrentUser` |
-| **Type Conversion Error** | Single-host ArrayList unwrap | Fixed in v2.0 — ensure you're running the latest version |
-| **Slow Scans on Legacy OS** | Server 2003 / XP WMI fallback | Expected behavior — WMI is significantly slower than WinEvent |
+| Access Denied | Not running as admin, or creds don't have access | Run as Administrator, use domain admin for remote |
+| Host unreachable | Firewall or DNS | Check that ICMP and TCP 5985/5986 are open, verify name resolution |
+| WinRM not available | Service not enabled | `Enable-PSRemoting -Force` on the target |
+| 0 events in a log | Log is empty or was cleared | Normal, shows as "Empty" status |
+| AD module not found | RSAT not installed | `Add-WindowsFeature RSAT-AD-PowerShell` on servers, or Optional Features on Win10/11 |
+| Execution policy error | Scripts blocked | `Set-ExecutionPolicy RemoteSigned -Scope CurrentUser` |
+| Type conversion error on single host | Bug in v1.x | Fixed in v2.0, make sure you have the latest script |
+| Really slow on old servers | 2003/XP uses WMI fallback | Expected, WMI is just slow on those boxes |
 
-### Reading the Log File
+### Checking the log file
 
-The execution log (`EPS-Collection-Log-*.txt`) contains timestamped entries for every operation:
+The log file (`EPS-Collection-Log-*.txt`) has timestamped entries:
 
 ```
 [2026-02-10 10:45:12] [Info]  Validating prerequisites...
-[2026-02-10 10:45:12] [Info]  Prerequisites validated successfully.
 [2026-02-10 10:45:13] [Info] VM-DC-01 Processing (1/3)...
 [2026-02-10 10:45:13] [Info] VM-DC-01   Scanning Application log...
 [2026-02-10 10:45:15] [Warn] VM-WKS-02 Host unreachable via ICMP ping.
 [2026-02-10 10:45:20] [Error] VM-SQL-01 Failed to scan Security log: Access is denied
 ```
 
-Search for `[Error]` entries to identify failures. Each entry includes the computer name and specific reason.
+Grep for `[Error]` to find failures fast.
 
-### Verifying WinRM Connectivity
+### Testing WinRM before you scan
 
 ```powershell
-# Test WinRM from the scanning machine
 Test-WSMan -ComputerName "target-server"
 
-# Test with credentials
+# or test with actual credentials
 $cred = Get-Credential
 Invoke-Command -ComputerName "target-server" -Credential $cred -ScriptBlock { hostname }
 ```
-
----
 
 ## Changelog
 
 ### v2.0.0
 
-**New Features**
-- Full CLI parameter support with interactive fallback
-- Data volume projections: GB/Day, GB/Week, GB/Month, GB/Year per log and total
-- Average event size calculation per log
-- ForwardedEvents and Sysmon log support via switches
-- Dual CSV output: detailed report + summary
-- Persistent timestamped log file
-- WinRM connectivity validation
-- Structured profile suggestion objects with tier classification
+New stuff:
+- CLI parameters (no more GUI-only), falls back to interactive if you don't pass anything
+- GB/Day, GB/Week, GB/Month, GB/Year volume projections per log and total
+- Average event size calculation
+- ForwardedEvents and Sysmon support (`-IncludeForwardedEvents`, `-IncludeSysmon`)
+- Two CSV outputs: detailed + summary
+- Log file saved alongside reports
+- WinRM check before scanning remote hosts
+- Profile suggestions now have tier numbers
 
-**Improvements**
-- Graceful per-host failure (continues scanning on errors)
-- PowerShell comment-based help (`Get-Help` compatible)
-- Organized code structure with regions
-- Consistent parameter splatting for remote vs local
-- Fixed single-host ArrayList type conversion error
+Fixed/improved:
+- Doesn't die if one host fails, keeps going through the rest
+- Works with `Get-Help` now (comment-based help)
+- Fixed the ArrayList type error when scanning a single host
+- Cleaner code layout with regions
 
 ### v1.0.0
 
-- Original release by Jamie Wheaton and William Delong
-- Three scan modes: Local Host, IP List, Domain
-- Application, Security, System log scanning
-- Basic EPS calculation and WinCollect profile suggestion
-- Single CSV export with GUI dialogs
+Original version by Jamie Wheaton and William Delong.
+- Local, IP list, and domain scan modes
+- Application/Security/System logs
+- EPS calculation with WinCollect profile suggestion
+- Single CSV export, GUI-based dialogs
+
+## Security notes
+
+- Don't hardcode credentials in the script or check them into git. The script prompts for them or accepts a PSCredential object.
+- For production use, configure WinRM over HTTPS (port 5986) with proper certs. The default HTTP transport encrypts creds via Kerberos/NTLM but doesn't encrypt the payload.
+- Don't use `TrustedHosts = *` in production. Scope it to specific hosts or subnets.
+- The output CSVs contain hostnames, OS versions, and event volume data. Treat them accordingly based on your org's classification policy.
+- Make sure you're authorized to scan whatever you're pointing this at, especially in domain mode where it'll hit every enabled Windows machine it finds.
+- Least privilege: Event Log Readers group + WinRM access is all you need on the targets. Don't use a full domain admin if you can avoid it.
